@@ -24,8 +24,10 @@
   </head>
   <body>
     <div id="info">
-      Draw with your mouse! Other users appear in red.<br />
-      Open in multiple tabs to test multiplayer.
+      <strong>Controls:</strong><br />
+      Left/Right Arrows: Move Player<br />
+      Q/E: Rotate Paddle<br />
+      Score points by hitting the goal with the ball!
     </div>
 
     <!-- Load p5.js from CDN -->
@@ -33,58 +35,240 @@
 
     <!-- Load Socket.IO client from CDN -->
     <script src="https://cdnjs.cloudflare.com/ajax/libs/socket.io/2.0.3/socket.io.js"></script>
-
+    <!-- Load Matter.js from CDN -->
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/matter-js/0.17.1/matter.min.js"></script>
     <!-- p5.js sketch -->
     <script>
       // Connect to the Socket.IO server (auto-connects to current origin)
       var socket = io();
-      let name = "Blob";
+
+      // Matter.js Setup
+      const { Engine, World, Bodies, Body, Events } = Matter;
+      let engine, world;
+      let ball, player, paddle, floor, roof, wall1, wall2, goal;
+      //other vars/constants
+      let score = 0;
+      const CANVASX = 800;
+      const CANVASY = 500;
+      const BALLSPAWNX = 20;
+      const BALLSPAWNY = 100;
+      let BOUNCEFORCE = -10;
+      let isHost = false;
+      let players = {}; // Store other players
+      let playerId = null;
+      let hostId = null;
+      let hostAssigned = false;
+      let ballData = { x: BALLSPAWNX, y: BALLSPAWNY, velocity: { x: 3, y: 0 } };
+
+      // Host assignment logic might be redundant
+      // let hostCheckInterval = setInterval(() => {
+      //   if (!hostAssigned) {
+      //     socket.emit('requestHost');
+      //   }
+      // }, 5000); // Check every 5 seconds
+
+      // let hostTimeout = setTimeout(() => {
+      //   if (!hostAssigned) {
+      //     isHost = true;
+      //     hostAssigned = true;
+      //     socket.emit('assignHost');
+      //     clearInterval(hostCheckInterval);
+      //   }
+      // }, 15000); // 15 seconds timeout
+
       function setup() {
-        createCanvas(windowWidth, windowHeight);
-        background(255);
+        createCanvas(CANVASX, CANVASY);
 
-        // Listen for drawing events from other users
-        socket.on("iamdrawing", someoneIsDrawing);
+        // Initialize Matter.js Engine and World
+        engine = Engine.create();
+        world = engine.world;
+        //world.gravity.y = 10; // Set gravity
 
-        // Listen for new user join notifications
-        socket.on("hello!", someoneJoined);
+        // Create ball
+        ball = Bodies.circle(10, 30, 15, {
+          restitution: 0.8,
+          frictionAir: 0.001,
+        });
+        World.add(world, ball);
 
-        name = prompt("Name for your blob?");
-        // player.debug = true;
-        if (name == null || name == "") {
-          name = "Blob";
-        }
-        // Announce our presence to the server
-        socket.emit("hello!", name);
-      }
+        // Create player (rectangle for simplicity)
+        player = Bodies.rectangle(random(100, CANVASX - 100), 465, 50, 50, {
+          isStatic: false,
+          inertia: Infinity,
+        });
+        World.add(world, player);
+
+        // Create paddle
+        paddle = Bodies.rectangle(
+          player.position.x,
+          player.position.y - 30,
+          90,
+          15,
+          { isStatic: true }
+        );
+        World.add(world, paddle);
+
+        // Create static walls
+
+        floor = Bodies.rectangle(CANVASX / 2, CANVASY, CANVASX, 5, {
+          isStatic: true,
+        });
+        roof = Bodies.rectangle(CANVASX / 2, 0, CANVASX, 5, { isStatic: true });
+        wall1 = Bodies.rectangle(0, CANVASY / 2, 20, CANVASY, {
+          isStatic: true,
+        });
+        wall2 = Bodies.rectangle(1000, CANVASY, 50, CANVASY, {
+          isStatic: true,
+        });
+        goal = Bodies.rectangle(785, 300, 30, 100, {
+          isStatic: true,
+          render: { fillStyle: "green" },
+        });
+
+        // Add static bodies to the world
+        World.add(world, [floor, roof, wall1, wall2, goal]);
+
+        // Matter.js engine run
+        Engine.run(engine);
+      } //end of setup
 
       function draw() {
-        // Only draw when mouse is pressed and moving
-        if (mouseIsPressed && (mouseX !== pmouseX || mouseY !== pmouseY)) {
-          // Draw locally (dark gray)
-          noStroke();
-          fill(30, 30, 30, 90);
-          var radius =
-            Math.abs(mouseX - pmouseX) / 3 + Math.abs(mouseY - pmouseY) / 3;
-          ellipse(mouseX, mouseY, radius, radius);
+        background(100);
 
-          // Send drawing data to server
-          socket.emit("iamdrawing", mouseX, mouseY, radius, name);
+        // Handle player movement (left/right) and paddle rotation (Q/E)
+        if (keyIsDown(LEFT_ARROW)) {
+          console.log("Left arrow pressed");
+          // Body.applyForce(player, player.position, { x: -0.5, y: 0 });
+          Body.setVelocity(player, { x: -1, y: player.velocity.y });
+        } else if (keyIsDown(RIGHT_ARROW)) {
+          console.log("Right arrow pressed");
+          // Body.applyForce(player, player.position, { x: 0.5, y: 0 });
+          Body.setVelocity(player, { x: 1, y: player.velocity.y });
+        }
+
+        if (keyIsDown(81)) {
+          // Q key
+          Body.rotate(paddle, -0.1); // Rotate paddle counter-clockwise
+        } else if (keyIsDown(69)) {
+          // E key
+          Body.rotate(paddle, 0.1); // Rotate paddle clockwise
+        }
+
+        // Sync player position with paddle
+        Body.setPosition(paddle, {
+          x: player.position.x,
+          y: player.position.y - 30,
+        });
+
+        // Display game entities
+        fill(255);
+        // ellipse(ball.position.x, ball.position.y, 30);
+        // Display the ball with a rotation indicator
+        fill(255);
+        ellipse(ball.position.x, ball.position.y, 30); // Draw the main circle
+
+        // Draw a small line on the edge of the circle to show rotation
+        let radius = 15; // Half the diameter of the ball
+        let indicatorLength = 10;
+        // Calculate the end point of the line using the ball's current angle
+        let endX =
+          ball.position.x + (radius + indicatorLength / 2) * cos(ball.angle);
+        let endY =
+          ball.position.y + (radius + indicatorLength / 2) * sin(ball.angle);
+
+        // Draw the indicator line
+        stroke(255, 0, 0); // Red color for visibility
+        strokeWeight(3);
+        line(ball.position.x, ball.position.y, endX, endY);
+        noStroke(); // Reset stroke for other elements
+
+        rect(player.position.x - 25, player.position.y - 25, 50, 50); // Draw player
+        rect(paddle.position.x - 45, paddle.position.y - 7, 90, 15); // Draw paddle
+
+        // Check for ball collisions with the goal
+        if (Matter.SAT.collides(ball, goal).collided) {
+          score += 1;
+          resetBall();
+        }
+
+        // Ball collision with floor or walls
+        if (ball.position.y > CANVASY) {
+          resetBall();
+        }
+        if (ball.position.y >= floor.position.y - 15) {
+          resetBall();
+        }
+
+        // Score
+        text("Score: " + score, 10, 30);
+      } //end of draw
+
+      function resetBall() {
+        // Reset ball to the spawn position
+        Body.setPosition(ball, { x: BALLSPAWNX, y: BALLSPAWNY });
+        Body.setAngularVelocity(ball, 0);
+        Body.setVelocity(ball, { x: 3, y: 0 });
+        Body.setAngle(ball, 0);
+        // Body.rotateLock(ball, true);
+      }
+
+      function checkBallCollisions() {
+        // Collision with paddle
+        if (Matter.SAT.collides(ball, paddle).collided) {
+          Body.setVelocity(ball, { x: ball.velocity.x, y: BOUNCEFORCE });
+        }
+
+        // Collision with walls or floor
+        if (ball.position.y > CANVASY) {
+          resetBall();
         }
       }
 
-      // This function is called when another user draws
-      function someoneIsDrawing(x, y, r, name) {
-        noStroke();
-        fill(255, 0, 0, 90); // Red for other users
-        ellipse(x, y, r, r);
-        text(name, x, y);
+      // Send player position and paddle rotation
+      setInterval(() => {
+        let playerData = {
+          id: player.id,
+          x: player.position.x,
+          y: player.position.y,
+          paddleRotation: paddle.angle,
+        };
+        socket.emit("playerUpdate", playerData);
+      }, 50);
+
+      // Receive updates from other players
+      socket.on("playerUpdate", (data) => {
+        if (data.id !== player.id) {
+          // Update other players' positions and paddles
+          let otherPlayer = players[data.id];
+          if (otherPlayer) {
+            Body.setPosition(otherPlayer, { x: data.x, y: data.y });
+            Body.setAngle(paddle, data.paddleRotation);
+          }
+        }
+      });
+
+      if (isHost) {
+        socket.emit("updateBall", {
+          x: ball.position.x,
+          y: ball.position.y,
+          velocity: ball.velocity,
+          velX: ball.velocity.x,
+          velY: ball.velocity.y,
+        });
       }
 
-      // This function is called when a new user joins
-      function someoneJoined() {
-        console.log("New user joined!");
-      }
+      // Client receiving ball position updates
+      socket.on("updateBall", (data) => {
+        if (!isHost) {
+          let errorX = data.x - ball.position.x;
+          let errorY = data.y - ball.position.y;
+          Body.setPosition(ball, {
+            x: ball.position.x + errorX * 0.3,
+            y: ball.position.y + errorY * 0.3,
+          });
+          Body.setVelocity(ball, data.velocity);
+        }
+      });
 
       // Resize canvas when window is resized
       function windowResized() {

@@ -8,6 +8,17 @@
         margin: 0;
         padding: 0;
         overflow: hidden;
+        display: flex;
+        justify-content: center;
+        align-items: center;
+        min-height: 100vh;
+        background-color: #222;
+      }
+      #canvas-container {
+        position: relative;
+      }
+      #p5-container {
+        display: inline-block;
       }
       #info {
         position: absolute;
@@ -23,11 +34,14 @@
     </style>
   </head>
   <body>
-    <div id="info">
-      <strong>Controls:</strong><br />
-      Left/Right Arrows: Move Player<br />
-      Q/E: Rotate Paddle<br />
-      Score points by hitting the goal with the ball!
+    <div id="canvas-container">
+      <div id="p5-container"></div>
+      <div id="info">
+        <strong>Controls:</strong><br />
+        Left/Right Arrows: Move Player<br />
+        Q/E: Rotate Paddle<br />
+        Score points by hitting the goal with the ball!
+      </div>
     </div>
 
     <!-- Load p5.js from CDN -->
@@ -50,13 +64,12 @@
       let score = 0;
       const CANVASX = 800;
       const CANVASY = 500;
-      let BOUNCEFORCE = -10;
-      let isHost = false;
       let players = {}; // Store other players
       let playerId = null;
       socket.on('connect', () => { playerId = socket.id; });
-      let hostId = null;
-      let hostAssigned = false;
+      let RandomColor1;
+      let RandomColor2;
+
       // Ball data from server (not a Matter.js body)
       let ballData = { x: 400, y: 250, vx: 5, vy: 2 };
       // Paddle rotation: track an explicit angle for predictable control
@@ -65,28 +78,16 @@
       const MIN_PADDLE_ANGLE = -1.2;
       const MAX_PADDLE_ANGLE = 1.2;
 
-      // Host assignment logic might be redundant
-      // let hostCheckInterval = setInterval(() => {
-      //   if (!hostAssigned) {
-      //     socket.emit('requestHost');
-      //   }
-      // }, 5000); // Check every 5 seconds
-
-      // let hostTimeout = setTimeout(() => {
-      //   if (!hostAssigned) {
-      //     isHost = true;
-      //     hostAssigned = true;
-      //     socket.emit('assignHost');
-      //     clearInterval(hostCheckInterval);
-      //   }
-      // }, 15000); // 15 seconds timeout
-
       function setup() {
-        createCanvas(CANVASX, CANVASY);
+        const container = document.getElementById('p5-container');
+        const canvas = createCanvas(CANVASX, CANVASY);
+        canvas.parent('p5-container');
 
         // Initialize Matter.js Engine and World
         engine = Engine.create();
         world = engine.world;
+        RandomColor1 = (random(), random(0, 255), random(0, 255));
+        RandomColor2 = (random(), random(), random());
         //world.gravity.y = 10; // Set gravity
 
         // Create ball
@@ -132,7 +133,7 @@
           isStatic: true,
           render: { fillStyle: "green" },
         });
-
+  
         // Add static bodies to the world (rendering only)
         World.add(world, [floor, roof, wall1, wall2, goal]);
         // Server controls all physics - do NOT run Engine.run()   
@@ -188,7 +189,30 @@
       });
 
       function draw() {
-        background(100);
+        background(50);
+        
+        // Update Matter.js bodies (required for angular velocity to work)
+        Engine.update(engine, 1000 / 60);
+
+        // Draw floor
+        fill(100);
+        rect(0, CANVASY - 10, CANVASX, 10);
+        
+        // Draw left wall
+        fill(100);
+        rect(0, 0, 10, CANVASY);
+        
+        // Draw right wall
+        fill(100);
+        rect(CANVASX - 10, 0, 10, CANVASY);
+        
+        // Draw top wall
+        fill(100);
+        rect(0, 0, CANVASX, 10);
+        
+        // Draw goal zone (right side)
+        fill(50, 200, 50, 100);
+        rect(750, 250, 50, 100);
 
         // Handle player movement (left/right) and paddle rotation (Q/E)
         let moveDir = 0;
@@ -208,35 +232,27 @@
           });
         }
 
-        // Physics-based paddle rotation using angular velocity with a constraint to follow the player
+        // Manual paddle angle control (deterministic and responsive)
         const dt = typeof deltaTime !== 'undefined' ? deltaTime : 16.6667;
         const frameScale = dt / 16.6667;
-        const ANG_VEL = 0.15; // tweak for responsiveness
+        const ROT_SPEED = 0.06; // radians per frame at 60fps
+        // initialize paddleAngle if missing
+        if (typeof paddleAngle === 'undefined') {
+          paddleAngle = paddle.angle || 0;
+        }
         if (keyIsDown(81)) { // Q
-          Body.setAngularVelocity(paddle, -ANG_VEL * frameScale);
+          paddleAngle -= ROT_SPEED * frameScale;
         } else if (keyIsDown(69)) { // E
-          Body.setAngularVelocity(paddle, ANG_VEL * frameScale);
-        } else {
-          // gentle damping when no input
-          Body.setAngularVelocity(paddle, paddle.angularVelocity * 0.9);
+          paddleAngle += ROT_SPEED * frameScale;
         }
-
         // Clamp angle limits to avoid flipping too far
-        if (paddle.angle < MIN_PADDLE_ANGLE) {
-          Body.setAngle(paddle, MIN_PADDLE_ANGLE);
-          Body.setAngularVelocity(paddle, 0);
-        } else if (paddle.angle > MAX_PADDLE_ANGLE) {
-          Body.setAngle(paddle, MAX_PADDLE_ANGLE);
-          Body.setAngularVelocity(paddle, 0);
-        }
-        
-        // Lock linear velocities to zero, keep angular velocity for rotation
+        paddleAngle = Math.max(MIN_PADDLE_ANGLE, Math.min(MAX_PADDLE_ANGLE, paddleAngle));
+
+        // Apply angle and keep paddle positioned above player
+        Body.setAngle(paddle, paddleAngle);
         Body.setVelocity(paddle, { x: 0, y: 0 });
         Body.setVelocity(player, { x: 0, y: 0 });
-        // Update paddle position but preserve its angle
-        const paddleAngle = paddle.angle;
         Body.setPosition(paddle, { x: player.position.x, y: player.position.y - 30 });
-        Body.setAngle(paddle, paddleAngle);
 
         // Display game entities
         fill(255);
@@ -258,18 +274,18 @@
         noStroke(); // Reset stroke for other elements
 
         // Draw local player as a circle
-        fill(255);
+        fill(RandomColor1)
         ellipse(player.position.x, player.position.y, 50, 50); // Draw player
         // Draw paddle with rotation applied
         push();
         translate(paddle.position.x, paddle.position.y);
         rotate(paddle.angle);
-        fill(255);
+        fill(RandomColor2); 
         rect(-45, -8, 90, 16); // Centered rectangle, height 16
         pop();
 
         // Draw remote players and their paddles
-        fill(200); // Darker fill for remote players
+        fill(RandomColor1);
         Object.keys(players).forEach((id) => {
           const p = players[id];
           if (p && p.body && p.paddle) {
@@ -279,6 +295,7 @@
             push();
             translate(p.paddle.position.x, p.paddle.position.y);
             rotate(p.paddle.angle);
+            fill(RandomColor2);
             rect(-45, -8, 90, 16); // Centered rectangle, height 16
             pop();
           }

@@ -1,7 +1,7 @@
 <!DOCTYPE html>
 <html>
   <head>
-    <title>p5.js Collaborative Drawing</title>
+    <title>Networked Games Testbed</title>
     <meta charset="utf-8" />
     <style>
       body {
@@ -13,6 +13,7 @@
         align-items: center;
         min-height: 100vh;
         background-color: #222;
+        position: relative;
       }
       #canvas-container {
         position: relative;
@@ -21,7 +22,7 @@
         display: inline-block;
       }
       #info {
-        position: absolute;
+        position: fixed;
         top: 10px;
         left: 10px;
         background: rgba(255, 255, 255, 0.8);
@@ -62,15 +63,33 @@
       // Matter.js Setup
       const { Engine, World, Bodies, Body, Events, Constraint } = Matter;
       let engine, world;
-      let ball, player, paddle, paddleConstraint, floor, roof, wall1, wall2, goal;
+      let ball, player, paddle, floor, roof, wall1, wall2, goal;
       let goalSound; // Sound for goal scoring
-      //other vars/constants
       let score = 0;
       const CANVASX = 800;
       const CANVASY = 500;
-      let goalY = 250; // Track goal Y position
-      let players = {}; // Store other players
+      let goalY = 250;
+      let players = {};
       let playerId = null;
+      let playerColors = {};      // Ball data from server (not a Matter.js body)
+      let ballData = { x: 400, y: 250, vx: 5, vy: 2 };
+      let paddleAngle = 0;
+      const MIN_PADDLE_ANGLE = -1.2;
+      const MAX_PADDLE_ANGLE = 1.2;
+      let hitCounter = 0; // Track hits/rally
+      let combos = {}; // Track combo count per player
+      let lastPointsEarned = 0; // Display last points earned
+      let pointsDisplayTimer = 0; // Timer to show points earned on goal
+
+      function preload() {
+        // Try to load goal sound, but don't break if it fails
+        try {
+          goalSound = createAudio('Sounds/video-game-bonus-323603.mp3');
+        } catch (e) {
+          console.log('Sound loading skipped - game will continue without sound');
+        }
+      }
+
       socket.on('connect', () => { 
         playerId = socket.id;
         // Generate random colors for the local player after connection
@@ -79,25 +98,6 @@
           paddleColor: color(random(50, 200), random(50, 200), random(50, 200))
         };
       });
-      let playerColors = {}; // Map player ID to {bodyColor, paddleColor}
-
-      // Ball data from server (not a Matter.js body)
-      let ballData = { x: 400, y: 250, vx: 5, vy: 2 };
-      // Paddle rotation: track an explicit angle for predictable control
-      let paddleAngle = 0;
-      const ROTATION_SPEED = 0.05; // radians per 16.67ms frame (~per-frame at 60fps)
-      const MIN_PADDLE_ANGLE = -1.2;
-      const MAX_PADDLE_ANGLE = 1.2;
-
-      function preload() {
-        // Try to load goal sound, but don't break if it fails
-        goalSound = null; // Initialize as null
-        try {
-          goalSound = createAudio('Sounds/video-game-bonus-323603.mp3');
-        } catch (e) {
-          console.log('Sound loading failed - game will continue without sound');
-        }
-      }
 
       function setup() {
         const container = document.getElementById('p5-container');
@@ -107,7 +107,6 @@
         // Initialize Matter.js Engine and World
         engine = Engine.create();
         world = engine.world;
-        //world.gravity.y = 10; // Set gravity
 
         // Create ball
         ball = Bodies.circle(10, 30, 15, {
@@ -141,13 +140,12 @@
         World.add(world, paddle);
 
         // Create static walls
-
         floor = Bodies.rectangle(CANVASX / 2, CANVASY, CANVASX, 5, {
           isStatic: true,
         });
-        // Set collision filter for floor: category 64, collides with players (1, 2) and ball
+        // Set collision filter for floor
         floor.collisionFilter.category = 64;
-        floor.collisionFilter.mask = 1 | 2 | 4; // collide with player, paddle, and remote players
+        floor.collisionFilter.mask = 1 | 2 | 4;
         roof = Bodies.rectangle(CANVASX / 2, 0, CANVASX, 5, { isStatic: true });
         wall1 = Bodies.rectangle(0, CANVASY / 2, 20, CANVASY, {
           isStatic: true,
@@ -162,9 +160,7 @@
   
         // Add static bodies to the world (rendering only)
         World.add(world, [floor, roof, wall1, wall2, goal]);
-        // Server controls all physics - do NOT run Engine.run()   
-
-} //end of setup
+      }// end of setup
 
       // Helper: create a remote player's physics bodies (static so they don't interfere)
       function createRemotePlayer(id, data) {
@@ -202,6 +198,10 @@
         if (data.goalY !== undefined) {
           goalY = data.goalY;
         }
+        // Initialize combos for all players
+        Object.keys(data.players || {}).forEach((id) => {
+          combos[id] = 0;
+        });
         if (data.players && player) {
           Object.keys(data.players).forEach((id) => {
             const pd = data.players[id];
@@ -219,12 +219,14 @@
       socket.on('newPlayer', (pd) => {
         if (pd && pd.id && pd.id !== playerId) {
           createRemotePlayer(pd.id, pd);
+          combos[pd.id] = 0; // Initialize their combo
         }
       });
 
       // Player disconnected
       socket.on('playerDisconnected', (id) => {
         removeRemotePlayer(id);
+        delete combos[id]; // Clean up their combo
       });
 
       function draw() {
@@ -270,11 +272,17 @@
             y: player.position.y 
           });
         }
+        
+        // Keep player on the floor (prevent sinking due to gravity)
+        if (player.position.y > 465) {
+          Body.setPosition(player, { x: player.position.x, y: 465 });
+          Body.setVelocity(player, { x: player.velocity.x, y: 0 }); // Stop downward velocity
+        }
 
         // Manual paddle angle control (deterministic and responsive)
         const dt = typeof deltaTime !== 'undefined' ? deltaTime : 16.6667;
         const frameScale = dt / 16.6667;
-        const ROT_SPEED = 0.06; // radians per frame at 60fps
+        const ROT_SPEED = 0.12; // radians per frame at 60fps
         // initialize paddleAngle if missing
         if (typeof paddleAngle === 'undefined') {
           paddleAngle = paddle.angle || 0;
@@ -351,8 +359,32 @@
 
         // Server handles all collisions and scoring
 
-        // Score
+        // Score and hit counter display
+        fill(255);
         text("Score: " + score, 10, 30);
+        text("Hits: " + hitCounter, 10, 50);
+        
+        // Display combo for local player
+        let myCombo = combos[playerId] || 0;
+        let comboText = "Combo: " + myCombo;
+        if (myCombo > 1) {
+          // Flash combo text if it's active
+          let flashIntensity = (sin(frameCount * 0.1) + 1) / 2;
+          fill(255, 255 * flashIntensity, 0); // Orange/yellow flash
+          text(comboText, 10, 70);
+        } else {
+          fill(200);
+          text(comboText, 10, 70);
+        }
+        
+        // Display last points earned with timer
+        if (pointsDisplayTimer > 0) {
+          fill(100, 255, 100); // Green for points
+          textSize(16);
+          text("+" + lastPointsEarned + " points!", 10, 90);
+          textSize(12);
+          pointsDisplayTimer--;
+        }
       } //end of draw
 
       // Physics and collision detection handled entirely by server
@@ -419,6 +451,27 @@
               // Sound failed, but game continues
             }
           }
+        }
+      });
+
+      // Receive hit counter updates from server
+      socket.on("hitCounterUpdate", (count) => {
+        hitCounter = count;
+      });
+
+      // Reset hit counter after goal
+      socket.on("hitCounterReset", () => {
+        hitCounter = 0;
+      });
+
+      // Receive combo updates from server
+      socket.on("comboUpdate", (combosData) => {
+        combos = combosData;
+        // Calculate points earned for local player
+        if (combos[playerId]) {
+          // Points = 1 base + combo count
+          lastPointsEarned = 1 + combos[playerId];
+          pointsDisplayTimer = 120; // Display for 2 seconds at 60fps
         }
       });
 

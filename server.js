@@ -41,13 +41,15 @@ let ballState = {
 
 let players = {};
 let scores = {}; // Track player scores
+let combos = {}; // Track combo count per player
 let lastPaddleHit = null; // Track who last hit the ball with their paddle
 let isHost = null;
+let paddleHitCooldown = {}; // Cooldown per paddle to prevent multiple hits in one contact
 
 // Helper function to get randomized spawn velocity
 function getRandomSpawnVelocity() {
   const speed = 1.2 + Math.random() * 0.6; // Random speed between 1.2 and 1.8
-  const angle = (Math.random() - 0.5) * 0.6; // Random angle between -0.3 and 0.3 radians
+  const angle = (Math.random() - 0.5) * 0.3; // Random angle between -0.15 and 0.15 radians (reduced from ±0.3)
   return {
     vx: speed * Math.cos(angle),
     vy: speed * Math.sin(angle)
@@ -62,14 +64,13 @@ let ballData = {
 };
 
 // Goal position tracking
-let goalY = 250; // Initial goal Y position
+let goalY = 250;
+let hitCounter = 0; // Track rally/hit count
 
 function randomizeGoalY() {
-  // Randomize goal Y between 150 and 350 (keeping it within bounds and reasonably centered)
   goalY = 150 + Math.random() * 200;
 }
 
-// Detect paddle collision for a single player and reflect the ball using paddle angle
 function handlePaddleCollision(playerId, playerData) {
   if (!playerData) return;
   const paddleX = playerData.x;
@@ -88,9 +89,10 @@ function handlePaddleCollision(playerId, playerData) {
   const localY = -dx * sin_r + dy * cos_r;
 
   const collisionMargin = 10;
-  if (Math.abs(localX) < paddleW / 2 + BALLRADIUS + collisionMargin &&
-      Math.abs(localY) < paddleH / 2 + BALLRADIUS + collisionMargin) {
-
+  const isColliding = Math.abs(localX) < paddleW / 2 + BALLRADIUS + collisionMargin &&
+      Math.abs(localY) < paddleH / 2 + BALLRADIUS + collisionMargin;
+  
+  if (isColliding) {
     const restitution = 0.78;
 
     // Normal points outward from paddle surface (upward when angle = 0)
@@ -113,7 +115,16 @@ function handlePaddleCollision(playerId, playerData) {
       ballState.x += nx * correction;
       ballState.y += ny * correction;
     }
-    lastPaddleHit = playerId;
+    
+    // Only count hit if cooldown has passed (prevent multiple hits in one contact)
+    if (!paddleHitCooldown[playerId]) {
+      hitCounter++; // Increment hit counter on paddle collision
+      lastPaddleHit = playerId;
+      paddleHitCooldown[playerId] = true; // Set cooldown
+    }
+  } else {
+    // Ball no longer in contact, clear this paddle's cooldown
+    paddleHitCooldown[playerId] = false;
   }
 }
 
@@ -122,10 +133,10 @@ const gameLoopInterval = setInterval(() => {
   // Use sub-stepping for collision detection (6 steps per fram
   // e)
   const substeps = 6;
-  const gravityTotal = 0.17; // overall gravity per frame (a bit faster fall)
+  const gravityTotal = 0.18; // overall gravity per frame (a bit faster fall)
   const gravityPerStep = gravityTotal / substeps;
-  const airDrag = 0.996; // mild damping to smooth jank while keeping bounce snappy
-  const maxSpeed = 11; // cap to avoid tunneling and runaway speed
+  const airDrag = 0.998; // reduced drag to preserve momentum (was 0.996)
+  const maxSpeed = 9; // clamp to avoid tunneling and runaway speed
   
   for (let i = 0; i < substeps; i++) {
     // Apply gravity for this substep
@@ -173,6 +184,7 @@ const gameLoopInterval = setInterval(() => {
       ballState.vx = 1.5;
       ballState.vy = 0.3;
       lastPaddleHit = null;
+      paddleHitCooldown = {}; // Reset all paddle cooldowns
     }
   }
   
@@ -180,8 +192,19 @@ const gameLoopInterval = setInterval(() => {
   if (ballState.x > 750 && ballState.x < 800 &&
       ballState.y > goalY - 50 && ballState.y < goalY + 50) {
     if (lastPaddleHit && scores[lastPaddleHit] !== undefined) {
-      scores[lastPaddleHit]++;
-      console.log(`${lastPaddleHit} scored! Score: ${scores[lastPaddleHit]}`);
+      // Initialize combo if not exists
+      if (!combos[lastPaddleHit]) {
+        combos[lastPaddleHit] = 0;
+      }
+      // Increment combo for this player
+      combos[lastPaddleHit]++;
+      
+      // Calculate points: 1 base point + 1 bonus per combo (so 2 points at combo 2, 3 points at combo 3, etc.)
+      const comboBonus = combos[lastPaddleHit];
+      const pointsEarned = 1 + comboBonus;
+      scores[lastPaddleHit] += pointsEarned;
+      
+      console.log(`${lastPaddleHit} scored! Combo: ${combos[lastPaddleHit]} | Points: +${pointsEarned} | Total Score: ${scores[lastPaddleHit]} (Rally: ${hitCounter})`);
     }
     ballState.x = BALLSPAWNX;
     ballState.y = BALLSPAWNY;
@@ -189,13 +212,18 @@ const gameLoopInterval = setInterval(() => {
     ballState.vx = spawnVel.vx;
     ballState.vy = spawnVel.vy;
     lastPaddleHit = null;
-    randomizeGoalY(); // Randomize goal position after each goal
-    io.emit('goalYUpdate', goalY); // Notify clients of new goal position
+    paddleHitCooldown = {}; // Reset all paddle cooldowns
+    randomizeGoalY();
+    io.emit('goalYUpdate', goalY);
+    io.emit('comboUpdate', combos); // Broadcast combo counts
+    io.emit('hitCounterReset'); // Reset hit counter after goal
+    hitCounter = 0;
   }
   
-  // Broadcast ball state
+  // Broadcast ball state and hit counter
   ballData = { x: ballState.x, y: ballState.y, vx: ballState.vx, vy: ballState.vy };
   io.emit('ballUpdate', ballData);
+  io.emit('hitCounterUpdate', hitCounter); // Broadcast hit counter to all clients
   io.emit('scoresUpdate', scores);
 }, 1000 / 60);
 
@@ -212,8 +240,9 @@ io.on('connection', (socket) => {
         lastActivity: Date.now()
     };
     
-    // Initialize score for this player
+    // Initialize score and combo for this player
     scores[socket.id] = 0;
+    combos[socket.id] = 0;
 
     // Send the initial player and ball state to the client
     // Include the receiver's socket id so the client can map its local body
@@ -240,13 +269,12 @@ io.on('connection', (socket) => {
     socket.on('disconnect', () => {
         console.log(`Player disconnected: ${socket.id}`);
         
-        // Remove the player from the list of players
-        delete players[socket.id];
+    // Remove the player from the list of players
+    delete players[socket.id];
 
-        // Remove their score
-        delete scores[socket.id];
-
-        // Notify other players that this player has disconnected
+    // Remove their score and combo
+    delete scores[socket.id];
+    delete combos[socket.id];        // Notify other players that this player has disconnected
         socket.broadcast.emit('playerDisconnected', socket.id);
 
         // Re-assign the host if needed

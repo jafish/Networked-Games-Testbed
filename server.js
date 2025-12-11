@@ -296,7 +296,6 @@ const gameLoopInterval = setInterval(() => {
   io.emit('ballUpdate', ballData);
   io.emit('hitCounterUpdate', hitCounter); // Broadcast hit counter to all clients
   io.emit('scoresUpdate', scores);
-  io.emit('canvasSizeUpdate', { width: CANVASX, height: CANVASY }); // Broadcast canvas size
 }, 1000 / 60);
 
 //when client connects to the server

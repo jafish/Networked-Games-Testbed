@@ -367,20 +367,6 @@
         
         ellipse(interpolatedBallX, interpolatedBallY, 30); // Draw the main circle
 
-        // Draw a small line on the edge of the circle to show rotation
-        let radius = 15; // Half the diameter of the ball
-        let indicatorLength = 10;
-        // Draw indicator based on velocity direction
-        let angle = Math.atan2(ballData.vy, ballData.vx);
-        let endX = interpolatedBallX + (radius + indicatorLength / 2) * cos(angle);
-        let endY = interpolatedBallY + (radius + indicatorLength / 2) * sin(angle);
-
-        // Draw the indicator line
-        stroke(255, 0, 0); // Red color for visibility
-        strokeWeight(3);
-        line(ballData.x, ballData.y, endX, endY);
-        noStroke(); // Reset stroke for other elements
-
         // Draw local player as a circle
         if (playerColors[playerId]) {
           fill(playerColors[playerId].bodyColor);

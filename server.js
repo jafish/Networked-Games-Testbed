@@ -12,10 +12,14 @@ let FRAME_RATE = 60;
 let FRAME_TIME = 1000 / FRAME_RATE;
 let lastFrameTime = Date.now();
 
-const server = express()
-  .use((req, res) => res.sendFile(INDEX))
-  .listen(PORT, () => console.log(`Listening on ${PORT}`));
-
+const app = express();
+app.use(express.static(path.join(__dirname, "public")));
+app.use("/Sounds", express.static(path.join(__dirname, "Sounds")));
+// Serve the index.html file and sounds
+app.get("/", (req, res) => res.sendFile(INDEX));
+const server = app.listen(PORT, () =>
+  console.log(`Listening on port ${PORT}`)
+); 
 const io = socketIO(server);
 
 // Matter.js Setup - Server-side physics
@@ -47,8 +51,8 @@ let paddleHitCooldown = {}; // Cooldown per paddle to prevent multiple hits in o
 
 // Helper function to get randomized spawn velocity
 function getRandomSpawnVelocity() {
-  const speed = 1.2 + Math.random() * 0.6; // Random speed between 1.2 and 1.8
-  const angle = (Math.random() - 0.5) * 0.3; // Random angle between -0.15 and 0.15 radians (reduced from ±0.3)
+  const speed = 2.2 + Math.random() * 0.6; // Random speed between 2.2 and 2.8
+  const angle = Math.random() * 0.2 - 0.05; // Random angle between -0.05 and 0.15 radians (more right-facing)
   return {
     vx: speed * Math.cos(angle),
     vy: speed * Math.sin(angle)
@@ -65,6 +69,7 @@ let ballData = {
 // Goal position tracking
 let goalY = 250;
 let hitCounter = 0; // Track rally/hit count
+let floorHitCount = 0; // Track consecutive floor hits
 
 function randomizeGoalY() {
   goalY = 150 + Math.random() * 200;
@@ -120,6 +125,8 @@ function handlePaddleCollision(playerId, playerData) {
       hitCounter++; // Increment hit counter on paddle collision
       lastPaddleHit = playerId;
       paddleHitCooldown[playerId] = true; // Set cooldown
+      floorHitCount = 0; // Reset floor hit counter on successful paddle hit
+      io.emit('paddleHit'); // Emit event to play paddle hit sound on all clients
     }
   } else {
     // Ball no longer in contact, clear this paddle's cooldown
@@ -135,7 +142,7 @@ const gameLoopInterval = setInterval(() => {
   const gravityTotal = 0.18; // overall gravity per frame (a bit faster fall)
   const gravityPerStep = gravityTotal / substeps;
   const airDrag = 0.998; // reduced drag to preserve momentum (was 0.996)
-  const maxSpeed = 9; // clamp to avoid tunneling and runaway speed
+  const maxSpeed = 10; // clamp to avoid tunneling and runaway speed
   
   for (let i = 0; i < substeps; i++) {
     // Apply gravity for this substep
@@ -184,6 +191,16 @@ const gameLoopInterval = setInterval(() => {
       ballState.vy = 0.3;
       lastPaddleHit = null;
       paddleHitCooldown = {}; // Reset all paddle cooldowns
+      floorHitCount++; // Increment floor hit counter
+      
+      // Reset all combos after 5 floor hits
+      if (floorHitCount >= 5) {
+        Object.keys(combos).forEach((id) => {
+          combos[id] = 0;
+        });
+        io.emit('comboUpdate', combos); // Broadcast combo reset
+        floorHitCount = 0; // Reset floor hit counter
+      }
     }
   }
   
@@ -268,12 +285,14 @@ io.on('connection', (socket) => {
     socket.on('disconnect', () => {
         console.log(`Player disconnected: ${socket.id}`);
         
-    // Remove the player from the list of players
-    delete players[socket.id];
+        // Remove the player from the list of players
+        delete players[socket.id];
 
-    // Remove their score and combo
-    delete scores[socket.id];
-    delete combos[socket.id];        // Notify other players that this player has disconnected
+        // Remove their score and combo
+        delete scores[socket.id];
+        delete combos[socket.id];
+
+        // Notify other players that this player has disconnected
         socket.broadcast.emit('playerDisconnected', socket.id);
     });
 });

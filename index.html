@@ -64,7 +64,7 @@
       const { Engine, World, Bodies, Body, Events, Constraint } = Matter;
       let engine, world;
       let ball, player, paddle, floor, roof, wall1, wall2, goal;
-      let goalSound; // Sound for goal scoring
+      let goalSound, paddleHitSound; // Sound for goal scoring and paddle hit
       let score = 0;
       const CANVASX = 800;
       const CANVASY = 500;
@@ -80,12 +80,33 @@
       let combos = {}; // Track combo count per player
       let lastPointsEarned = 0; // Display last points earned
       let pointsDisplayTimer = 0; // Timer to show points earned on goal
+      let paddleHitCooldown = false; // Cooldown for paddle hit sound
+      let audioReady = false; // Tracks if AudioContext has been resumed
+      let lastScore = 0; // Track last known score to gate goal sound
+
+      // Resume the AudioContext on first user gesture to satisfy browser autoplay policy
+      function resumeAudioContextOnce() {
+        if (audioReady) return;
+        const ctx = getAudioContext ? getAudioContext() : null;
+        if (ctx && ctx.state !== 'running') {
+          ctx.resume();
+        }
+        audioReady = true;
+        window.removeEventListener('pointerdown', resumeAudioContextOnce);
+        window.removeEventListener('keydown', resumeAudioContextOnce);
+      }
+      window.addEventListener('pointerdown', resumeAudioContextOnce);
+      window.addEventListener('keydown', resumeAudioContextOnce);
 
       function preload() {
         // Try to load goal sound, but don't break if it fails
         // Note need to fix sound, Dont think I imported it right, but game works without it with the catch
         try {
-          goalSound = createAudio('Sounds/video-game-bonus-323603.mp3');
+          goalSound = loadSound('Sounds/video-game-bonus-323603.mp3');
+          paddleHitSound = loadSound('Sounds/tennis-ball-hit-386155.mp3');
+          // Tame volumes to avoid loud bursts
+          goalSound.setVolume(0.25);
+          paddleHitSound.setVolume(0.2);
         } catch (e) {
           console.log('Sound loading skipped - game will continue without sound');
         }
@@ -198,6 +219,10 @@
         }
         if (data.goalY !== undefined) {
           goalY = data.goalY;
+        }
+        if (data.scores && data.scores[playerId] !== undefined) {
+          lastScore = data.scores[playerId];
+          score = lastScore;
         }
         // Initialize combos for all players
         Object.keys(data.players || {}).forEach((id) => {
@@ -445,15 +470,17 @@
       socket.on("scoresUpdate", (scoresData) => {
         // Update local score if it exists for this player
         if (scoresData[playerId] !== undefined) {
-          score = scoresData[playerId];
-          // Try to play goal sound (dont fully fail if not available)
-          if (goalSound) {
+          const newScore = scoresData[playerId];
+          // Play goal sound only when score increases
+          if (newScore > lastScore && audioReady && goalSound && goalSound.isLoaded()) {
             try {
               goalSound.play();
             } catch (e) {
               // Sound failed, but game continues
             }
           }
+          lastScore = newScore;
+          score = newScore;
         }
       });
 
@@ -475,6 +502,20 @@
           // Points = 1 base + combo count
           lastPointsEarned = 1 + combos[playerId];
           pointsDisplayTimer = 120; // Display for 2 seconds at 60fps
+        }
+      });
+
+      // Receive paddle hit event from server
+      socket.on("paddleHit", () => {
+        // Play paddle hit sound with 400ms cooldown
+        if (!paddleHitCooldown && audioReady && paddleHitSound && paddleHitSound.isLoaded()) {
+          try {
+            paddleHitSound.play();
+            paddleHitCooldown = true;
+            setTimeout(() => { paddleHitCooldown = false; }, 400);
+          } catch (e) {
+            // Sound failed, but game continues
+          }
         }
       });
 

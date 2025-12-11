@@ -17,6 +17,7 @@
       }
       #canvas-container {
         position: relative;
+        transform-origin: center center;
       }
       #p5-container {
         display: inline-block;
@@ -30,19 +31,20 @@
         border-radius: 5px;
         font-family: Arial, sans-serif;
         font-size: 14px;
-        z-index: 1000;
+        z-index: 10000;
+        pointer-events: none;
       }
     </style>
   </head>
   <body>
+    <div id="info">
+      <strong>Controls:</strong><br />
+      Left/Right Arrows: Move Player<br />
+      Q/E: Rotate Paddle<br />
+      Score points by hitting the goal with the ball!
+    </div>
     <div id="canvas-container">
       <div id="p5-container"></div>
-      <div id="info">
-        <strong>Controls:</strong><br />
-        Left/Right Arrows: Move Player<br />
-        Q/E: Rotate Paddle<br />
-        Score points by hitting the goal with the ball!
-      </div>
     </div>
 
     <!-- Load p5.js from CDN -->
@@ -66,8 +68,8 @@
       let ball, player, paddle, floor, roof, wall1, wall2, goal;
       let goalSound, paddleHitSound; // Sound for goal scoring and paddle hit
       let score = 0;
-      const CANVASX = 800;
-      const CANVASY = 500;
+      let CANVASX = 800; // Dynamic canvas width
+      let CANVASY = 500; // Dynamic canvas height
       let goalY = 250;
       let players = {};
       let playerId = null;
@@ -219,6 +221,14 @@
         if (data.you) {
           playerId = data.you;
         }
+        // Update canvas size from server
+        if (data.canvasWidth && data.canvasHeight) {
+          CANVASX = data.canvasWidth;
+          // CANVASY stays constant at 500
+          resizeCanvas(CANVASX, CANVASY);
+          rebuildWorld();
+          adjustCanvasZoom(); // Zoom out if canvas is too large
+        }
         if (data.goalY !== undefined) {
           goalY = data.goalY;
         }
@@ -281,7 +291,7 @@
         
         // Draw goal zone (right side) - dynamically positioned
         fill(50, 200, 50, 100);
-        rect(750, goalY - 50, 50, 100);
+        rect(CANVASX - 50, goalY - 50, 50, 100);
 
         // Handle player movement (left/right) and paddle rotation (Q/E)
         let moveDir = 0;
@@ -293,7 +303,7 @@
         
         // Update player position locally
         if (moveDir !== 0) {
-          const newX = player.position.x + moveDir * 3;
+          const newX = player.position.x + moveDir * 2.25; // 25% slower
           // Clamp to canvas bounds
           Body.setPosition(player, { 
             x: constrain(newX, 30, CANVASX - 30), 
@@ -310,7 +320,7 @@
         // Manual paddle angle control (deterministic and responsive)
         const dt = typeof deltaTime !== 'undefined' ? deltaTime : 16.6667;
         const frameScale = dt / 16.6667;
-        const ROT_SPEED = 0.12; // radians per frame at 60fps
+        const ROT_SPEED = 0.05; // radians per frame at 60fps (slower for precision)
 
         // initialize paddleAngle if missing
         if (typeof paddleAngle === 'undefined') {
@@ -535,9 +545,67 @@
         }
       });
 
+      // Listen for canvas size updates
+      socket.on('canvasSizeUpdate', (data) => {
+        if (data.width) {
+          console.log(`Canvas size update received: ${data.width}x${CANVASY}`);
+          CANVASX = data.width;
+          // CANVASY stays constant at 500
+          resizeCanvas(CANVASX, CANVASY);
+          rebuildWorld();
+          adjustCanvasZoom(); // Zoom out if canvas is too large
+        }
+      });
+
+      // Adjust canvas container zoom to fit viewport
+      function adjustCanvasZoom() {
+        const container = document.getElementById('canvas-container');
+        const maxWidth = window.innerWidth - 40; // Leave some margin
+        const maxHeight = window.innerHeight - 40;
+        
+        const scaleX = maxWidth / CANVASX;
+        const scaleY = maxHeight / CANVASY;
+        const scale = Math.min(1, scaleX, scaleY); // Don't zoom in, only zoom out
+        
+        container.style.transform = `scale(${scale})`;
+      }
+
       // Resize canvas when window is resized
       function windowResized() {
-        resizeCanvas(windowWidth, windowHeight);
+        adjustCanvasZoom();
+      }
+      
+      // Rebuild Matter.js world with new canvas dimensions
+      function rebuildWorld() {
+        // Remove old bodies
+        if (floor) World.remove(world, floor);
+        if (roof) World.remove(world, roof);
+        if (wall1) World.remove(world, wall1);
+        if (wall2) World.remove(world, wall2);
+        if (goal) World.remove(world, goal);
+        
+        // Recreate static bodies with new dimensions
+        floor = Bodies.rectangle(CANVASX / 2, CANVASY, CANVASX, 5, {
+          isStatic: true,
+          render: { fillStyle: "gray" },
+        });
+        floor.collisionFilter.category = 64;
+        floor.collisionFilter.mask = 1;
+
+        roof = Bodies.rectangle(CANVASX / 2, 0, CANVASX, 5, { isStatic: true });
+        wall1 = Bodies.rectangle(0, CANVASY / 2, 20, CANVASY, {
+          isStatic: true,
+        });
+        wall2 = Bodies.rectangle(CANVASX, CANVASY, 50, CANVASY, {
+          isStatic: true,
+          render: { fillStyle: "green" },
+        });
+        goal = Bodies.rectangle(CANVASX - 15, 300, 30, 100, {
+          isStatic: true,
+          render: { fillStyle: "green" },
+        });
+        
+        World.add(world, [floor, roof, wall1, wall2, goal]);
       }
     </script>
   </body>

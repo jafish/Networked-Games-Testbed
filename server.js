@@ -27,11 +27,24 @@ const { Engine, World, Bodies, Body } = Matter;
 const engine = Engine.create();
 const world = engine.world;
 world.gravity.y = 0;
-const CANVASX = 800;
+const MIN_CANVASX = 600; // Minimum canvas width (1 player)
+const CANVASX_PER_PLAYER = 100; // Add 100px per player
+let CANVASX = MIN_CANVASX; // Dynamic canvas width
 const CANVASY = 500;
 const BALLSPAWNX = 20;
 const BALLSPAWNY = 50;
 const BALLRADIUS = 15;
+
+// Function to get canvas width based on player count
+function getCanvasWidth() {
+  const playerCount = Object.keys(players).length;
+  return MIN_CANVASX + (playerCount * CANVASX_PER_PLAYER);
+}
+
+// Function to get goal X position (always at right edge)
+function getGoalX() {
+  return CANVASX - 50;
+}
 
 // Simple ball data for manual physics
 let ballState = {
@@ -49,7 +62,6 @@ let combos = {}; // Track combo count per player
 let lastPaddleHit = null; // Track who last hit the ball with their paddle
 let paddleHitCooldown = {}; // Cooldown per paddle to prevent multiple hits in one contact
 let playerStates = {}; // Store recent paddle states for interpolation {playerId: [{x, y, paddleRotation, timestamp}, ...]}
-let consecutivePaddleBounces = 0; // Track consecutive bounces off paddles (for damping only first one)
 const STATE_BUFFER_SIZE = 3; // Keep last 3 updates for interpolation
 
 // Helper function to get randomized spawn velocity
@@ -134,9 +146,7 @@ function handlePaddleCollision(playerId, playerData) {
       Math.abs(localY) < paddleH / 2 + BALLRADIUS + collisionMargin;
   
   if (isColliding) {
-    // Only apply damping on first consecutive bounce
-    const damping = consecutivePaddleBounces === 0 ? 0.85 : 1.0;
-    const restitution = 1.20 * damping; // Dampen only the first bounce in a consecutive series
+    const restitution = 1.0 // Add energy to maintain bounce height
 
     // Normal points outward from paddle surface (upward when angle = 0)
     const nx = sin_r;
@@ -167,7 +177,6 @@ function handlePaddleCollision(playerId, playerData) {
       lastPaddleHit = playerId;
       paddleHitCooldown[playerId] = true; // Set cooldown
       floorHitCount = 0; // Reset floor hit counter on successful paddle hit
-      consecutivePaddleBounces++; // Increment bounce counter for damping tracking
       io.emit('paddleHit'); // Emit event to play paddle hit sound on all clients
     }
   } else {
@@ -183,8 +192,8 @@ const gameLoopInterval = setInterval(() => {
   const substeps = 6;
   const gravityTotal = 0.18; // overall gravity per frame (a bit faster fall)
   const gravityPerStep = gravityTotal / substeps;
-  const airDrag = 0.998; // reduced drag to preserve momentum (was 0.996)
-  const maxSpeed = 10; // clamp to avoid tunneling and runaway speed
+  const airDrag = 1.0; // No air drag to preserve momentum from paddles
+  const maxSpeed = 9.5; // clamp to avoid tunneling and runaway speed
   
   for (let i = 0; i < substeps; i++) {
     // Apply gravity for this substep
@@ -202,15 +211,15 @@ const gameLoopInterval = setInterval(() => {
     // Wall bounces (with damping)
     if (ballState.x - BALLRADIUS < 0) {
       ballState.x = BALLRADIUS;
-      ballState.vx = -ballState.vx * 0.9;
+      ballState.vx = -ballState.vx * 0.95;
     }
     if (ballState.x + BALLRADIUS > CANVASX) {
       ballState.x = CANVASX - BALLRADIUS;
-      ballState.vx = -ballState.vx * 0.9;
+      ballState.vx = -ballState.vx * 0.95;
     }
     if (ballState.y - BALLRADIUS < 0) {
       ballState.y = BALLRADIUS;
-      ballState.vy = Math.abs(ballState.vy) * 0.6; // Bounce down with less energy
+      ballState.vy = Math.abs(ballState.vy) * 0.8; // Bounce down with less energy
     }
 
     // Gentle air drag to reduce jitter and excessive speed
@@ -233,7 +242,6 @@ const gameLoopInterval = setInterval(() => {
       ballState.vy = 0.3;
       lastPaddleHit = null;
       paddleHitCooldown = {}; // Reset all paddle cooldowns
-      consecutivePaddleBounces = 0; // Reset bounce counter on floor hit
       floorHitCount++; // Increment floor hit counter
       
       // Reset all combos after 5 floor hits
@@ -247,8 +255,12 @@ const gameLoopInterval = setInterval(() => {
     }
   }
   
-  // Goal detection
-  if (ballState.x > 750 && ballState.x < 800 &&
+  // Update canvas width based on player count
+  CANVASX = getCanvasWidth();
+  
+  // Goal detection (goal is always at right edge)
+  const goalX = getGoalX();
+  if (ballState.x > goalX - 50 && ballState.x < goalX &&
       ballState.y > goalY - 50 && ballState.y < goalY + 50) {
     if (lastPaddleHit && scores[lastPaddleHit] !== undefined) {
       // Initialize combo if not exists
@@ -272,7 +284,6 @@ const gameLoopInterval = setInterval(() => {
     ballState.vy = spawnVel.vy;
     lastPaddleHit = null;
     paddleHitCooldown = {}; // Reset all paddle cooldowns
-    consecutivePaddleBounces = 0; // Reset bounce counter on goal
     randomizeGoalY();
     io.emit('goalYUpdate', goalY);
     io.emit('comboUpdate', combos); // Broadcast combo counts
@@ -285,6 +296,7 @@ const gameLoopInterval = setInterval(() => {
   io.emit('ballUpdate', ballData);
   io.emit('hitCounterUpdate', hitCounter); // Broadcast hit counter to all clients
   io.emit('scoresUpdate', scores);
+  io.emit('canvasSizeUpdate', { width: CANVASX, height: CANVASY }); // Broadcast canvas size
 }, 1000 / 60);
 
 //when client connects to the server
@@ -304,12 +316,19 @@ io.on('connection', (socket) => {
     scores[socket.id] = 0;
     combos[socket.id] = 0;
 
+    // Update canvas size for new player count
+    CANVASX = getCanvasWidth();
+    console.log(`Player joined. Total players: ${Object.keys(players).length}, Canvas width: ${CANVASX}`);
+    
     // Send the initial player and ball state to the client
     // Include the receiver's socket id so the client can map its local body
-    socket.emit('initialState', { players, ballData, scores, goalY, you: socket.id });
+    socket.emit('initialState', { players, ballData, scores, goalY, canvasWidth: CANVASX, canvasHeight: CANVASY, you: socket.id });
 
     // Notify other players about the new player
     socket.broadcast.emit('newPlayer', players[socket.id]);
+    
+    // Broadcast updated canvas size to all players (including the new one)
+    io.emit('canvasSizeUpdate', { width: CANVASX, height: CANVASY });
 
     // Listen for player movement updates
     socket.on('playerUpdate', (data) => {
@@ -351,8 +370,13 @@ io.on('connection', (socket) => {
         // Remove their score and combo
         delete scores[socket.id];
         delete combos[socket.id];
+        
+        // Update canvas size for remaining players
+        CANVASX = getCanvasWidth();
+        console.log(`Player left. Total players: ${Object.keys(players).length}, Canvas width: ${CANVASX}`);
 
         // Notify other players that this player has disconnected
         socket.broadcast.emit('playerDisconnected', socket.id);
+        io.emit('canvasSizeUpdate', { width: CANVASX, height: CANVASY });
     });
 });

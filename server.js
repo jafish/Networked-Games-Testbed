@@ -87,7 +87,7 @@ let hitCounter = 0; // Track rally/hit count
 let floorHitCount = 0; // Track consecutive floor hits
 
 function randomizeGoalY() {
-  goalY = 100 + Math.random() * 200;// Random Y between 150 and 350
+  goalY = 200 + Math.random() * 200;// Random Y between 150 and 350
 }
 
 // Interpolate paddle state based on timestamp
